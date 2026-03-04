@@ -72,35 +72,49 @@ function syncMarkdownFiles() {
   var doc = DocumentApp.openById(syncLogFile.getId());
   var body = doc.getBody();
 
-  // 4. SOURCE_FOLDER_ID 直下の全ファイルを走査
-  var files = sourceFolder.getFiles();
+  // 4. SOURCE_FOLDER_ID 直下の全ファイルを走査して .md ファイルを収集
+  var allFiles = sourceFolder.getFiles();
+  var mdFiles = [];
   var totalFiles = 0;
+
+  while (allFiles.hasNext()) {
+    var f = allFiles.next();
+    totalFiles++;
+    if (f.getName().toLowerCase().endsWith('.md')) {
+      mdFiles.push(f);
+    }
+  }
+
+  // ---- スキャン結果サマリー ----
+  Logger.log('---- スキャン結果 ----');
+  Logger.log('フォルダ内ファイル総数: ' + totalFiles + '件');
+  if (mdFiles.length === 0) {
+    Logger.log('.mdファイルは見つかりませんでした。');
+    Logger.log('※ ファイルがサブフォルダ内にある場合は検出されません。');
+    Logger.log('※ debugListFiles() を実行するとフォルダ内の全ファイル一覧を確認できます。');
+  } else {
+    Logger.log('.mdファイルを ' + mdFiles.length + '件 発見しました:');
+    for (var i = 0; i < mdFiles.length; i++) {
+      Logger.log('  [' + (i + 1) + '] ' + mdFiles[i].getName());
+    }
+  }
+  Logger.log('----------------------');
+
+  // 5. 発見した .md ファイルを順番に処理
   var convertedCount = 0;
   var skippedCount = 0;
 
-  while (files.hasNext()) {
-    var file = files.next();
+  for (var i = 0; i < mdFiles.length; i++) {
+    var file = mdFiles[i];
     var fileName = file.getName();
-    var mimeType = file.getMimeType();
-    totalFiles++;
-
-    Logger.log('発見: "' + fileName + '" (MIME: ' + mimeType + ')');
-
-    // .md 拡張子以外はスキップ
-    if (!fileName.toLowerCase().endsWith('.md')) {
-      Logger.log('  → スキップ（.mdではない）');
-      continue;
-    }
-
-    Logger.log('  → .mdファイルとして処理開始');
 
     // 出力ファイル名を生成（元ファイルの最終更新日を使用）
     var outputName = generateOutputName(fileName, file.getLastUpdated());
-    Logger.log('  → 出力ファイル名: ' + outputName);
+    Logger.log('[処理 ' + (i + 1) + '/' + mdFiles.length + '] ' + fileName + ' → ' + outputName);
 
     // 同名ファイルが既に存在する場合はスキップ
     if (outputFolder.getFilesByName(outputName).hasNext()) {
-      Logger.log('  → スキップ（既存）: ' + outputName);
+      Logger.log('  → スキップ（既存）');
       skippedCount++;
       continue;
     }
@@ -111,13 +125,13 @@ function syncMarkdownFiles() {
       convertMdToGoogleDoc(content, outputName, outputFolder);
       appendToSyncLog(body, new Date(), fileName, outputName);
       convertedCount++;
+      Logger.log('  → 変換完了');
     } catch (e) {
       Logger.log('  → エラー: ' + e.message);
     }
   }
 
   doc.saveAndClose();
-  Logger.log('フォルダ内ファイル総数: ' + totalFiles + '件');
   Logger.log('Phase 2 完了: 変換=' + convertedCount + '件, スキップ=' + skippedCount + '件');
 }
 
