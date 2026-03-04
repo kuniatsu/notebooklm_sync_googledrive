@@ -72,40 +72,52 @@ function syncMarkdownFiles() {
   var doc = DocumentApp.openById(syncLogFile.getId());
   var body = doc.getBody();
 
-  // 4. SOURCE_FOLDER_ID 直下の .md ファイルを処理
+  // 4. SOURCE_FOLDER_ID 直下の全ファイルを走査
   var files = sourceFolder.getFiles();
+  var totalFiles = 0;
   var convertedCount = 0;
   var skippedCount = 0;
 
   while (files.hasNext()) {
     var file = files.next();
     var fileName = file.getName();
+    var mimeType = file.getMimeType();
+    totalFiles++;
 
-    if (!fileName.toLowerCase().endsWith('.md')) continue;
+    Logger.log('発見: "' + fileName + '" (MIME: ' + mimeType + ')');
 
-    Logger.log('.mdファイルを検出: ' + fileName);
+    // .md 拡張子以外はスキップ
+    if (!fileName.toLowerCase().endsWith('.md')) {
+      Logger.log('  → スキップ（.mdではない）');
+      continue;
+    }
+
+    Logger.log('  → .mdファイルとして処理開始');
 
     // 出力ファイル名を生成（元ファイルの最終更新日を使用）
     var outputName = generateOutputName(fileName, file.getLastUpdated());
+    Logger.log('  → 出力ファイル名: ' + outputName);
 
     // 同名ファイルが既に存在する場合はスキップ
     if (outputFolder.getFilesByName(outputName).hasNext()) {
-      Logger.log('スキップ（既存）: ' + outputName);
+      Logger.log('  → スキップ（既存）: ' + outputName);
       skippedCount++;
       continue;
     }
 
-    // Markdownの内容をGoogleドキュメントに変換してNoteBookLMフォルダへ配置
-    var content = file.getBlob().getDataAsString('UTF-8');
-    convertMdToGoogleDoc(content, outputName, outputFolder);
-
-    // sync-log に記録
-    appendToSyncLog(body, new Date(), fileName, outputName);
-
-    convertedCount++;
+    // Markdownの内容を読み込んでGoogleドキュメントに変換
+    try {
+      var content = file.getBlob().getDataAsString('UTF-8');
+      convertMdToGoogleDoc(content, outputName, outputFolder);
+      appendToSyncLog(body, new Date(), fileName, outputName);
+      convertedCount++;
+    } catch (e) {
+      Logger.log('  → エラー: ' + e.message);
+    }
   }
 
   doc.saveAndClose();
+  Logger.log('フォルダ内ファイル総数: ' + totalFiles + '件');
   Logger.log('Phase 2 完了: 変換=' + convertedCount + '件, スキップ=' + skippedCount + '件');
 }
 
@@ -137,21 +149,34 @@ function generateOutputName(fileName, lastModified) {
 /**
  * Markdownテキストの内容でGoogleドキュメントを作成し、指定フォルダに配置する。
  *
+ * DocumentApp.create() はスクリプトの種類によって作成先フォルダが異なるため、
+ * getRootFolder() に頼らず getParents() で動的に親フォルダを取得して移動する。
+ *
  * @param {string} content - Markdownファイルのテキスト内容
  * @param {string} outputName - 作成するGoogleドキュメントの名前
  * @param {Folder} outputFolder - 配置先フォルダ
  * @return {File} 作成されたGoogleドキュメントのFileオブジェクト
  */
 function convertMdToGoogleDoc(content, outputName, outputFolder) {
-  // Googleドキュメントを新規作成（マイドライブルートに生成される）
+  // Googleドキュメントを新規作成
   var newDoc = DocumentApp.create(outputName);
   newDoc.getBody().setText(content);
   newDoc.saveAndClose();
 
-  // NoteBookLM フォルダに移動してルートから削除
   var docFile = DriveApp.getFileById(newDoc.getId());
+
+  // NoteBookLM フォルダに追加
   outputFolder.addFile(docFile);
-  DriveApp.getRootFolder().removeFile(docFile);
+
+  // 作成時に配置された元の親フォルダ（root または スクリプトの親フォルダ）から削除
+  // getRootFolder() に頼らず getParents() で実際の親を走査して除去する
+  var parents = docFile.getParents();
+  while (parents.hasNext()) {
+    var parent = parents.next();
+    if (parent.getId() !== outputFolder.getId()) {
+      parent.removeFile(docFile);
+    }
+  }
 
   Logger.log('Googleドキュメントを作成: ' + outputName);
   return docFile;
@@ -175,6 +200,33 @@ function appendToSyncLog(body, copyDate, originalName, outputName) {
 
   body.appendParagraph(logLine);
   Logger.log('sync-logに記録: ' + logLine);
+}
+
+// ============================================================
+// デバッグ用関数
+// ============================================================
+
+/**
+ * SOURCE_FOLDER_ID のフォルダ内にあるファイルの一覧とMIMEタイプをログに出力する。
+ * syncMarkdownFiles() が正常に動作しない場合に先に実行して原因を確認する。
+ */
+function debugListFiles() {
+  var sourceFolder = DriveApp.getFolderById(SOURCE_FOLDER_ID);
+  Logger.log('=== フォルダ: ' + sourceFolder.getName() + ' (ID: ' + sourceFolder.getId() + ') ===');
+
+  var files = sourceFolder.getFiles();
+  var count = 0;
+  while (files.hasNext()) {
+    var file = files.next();
+    Logger.log('[' + (count + 1) + '] 名前: "' + file.getName() + '" | MIME: ' + file.getMimeType() + ' | 最終更新: ' + file.getLastUpdated());
+    count++;
+  }
+
+  if (count === 0) {
+    Logger.log('（ファイルなし）');
+  }
+  Logger.log('合計 ' + count + ' 件のファイルが見つかりました。');
+  Logger.log('※ .md ファイルが一覧にない場合は SOURCE_FOLDER_ID が違うか、ファイルがサブフォルダ内にあります。');
 }
 
 // ============================================================
@@ -216,13 +268,19 @@ function getOrCreateSyncLog(outputFolder, logFileName) {
   }
 
   // 新規Googleドキュメントを作成してフォルダに移動
-  var doc = DocumentApp.create(logFileName);
-  var docFile = DriveApp.getFileById(doc.getId());
+  var newDoc = DocumentApp.create(logFileName);
+  var docFile = DriveApp.getFileById(newDoc.getId());
 
-  // Googleドキュメント作成時はマイドライブルートに作られるため、
-  // 対象フォルダに移動してルートから削除する
   outputFolder.addFile(docFile);
-  DriveApp.getRootFolder().removeFile(docFile);
+
+  // 作成時の元の親フォルダ（root またはスクリプトの親フォルダ）から削除
+  var parents = docFile.getParents();
+  while (parents.hasNext()) {
+    var parent = parents.next();
+    if (parent.getId() !== outputFolder.getId()) {
+      parent.removeFile(docFile);
+    }
+  }
 
   Logger.log('新規sync-logを作成: ' + logFileName);
   return docFile;
