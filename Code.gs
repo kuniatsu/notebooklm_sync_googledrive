@@ -91,6 +91,9 @@ function syncMarkdownFiles() {
       continue;
     }
 
+    // 古いバージョン（同じベース名、異なるタイムスタンプ）を削除
+    deleteOldVersions(outputFolder, outputName);
+
     // Markdownの内容を読み込んでGoogleドキュメントに変換
     try {
       var content = file.getBlob().getDataAsString('UTF-8');
@@ -163,6 +166,29 @@ function appendToSyncLog(body, copyDate, originalName, outputName) {
 
   body.appendParagraph(logLine);
   Logger.log('sync-logに記録: ' + logLine);
+}
+
+/**
+ * NoteBookLM フォルダ内から、同じベース名（タイムスタンプ違い）の古いファイルを削除する。
+ *
+ * 出力ファイル名の形式: {base}_{ext}-{yymmddhhmm}
+ * ハイフンより前のプレフィックス部分（例: README_md-）が一致するファイルを古いバージョンと判断する。
+ */
+function deleteOldVersions(outputFolder, newOutputName) {
+  var hyphenIndex = newOutputName.lastIndexOf('-');
+  if (hyphenIndex < 0) return;
+
+  var prefix = newOutputName.substring(0, hyphenIndex + 1); // 例: README_md-
+
+  var allFiles = outputFolder.getFiles();
+  while (allFiles.hasNext()) {
+    var f = allFiles.next();
+    var name = f.getName();
+    if (name !== newOutputName && name.indexOf(prefix) === 0) {
+      Logger.log('  → 旧バージョンを削除: ' + name);
+      f.setTrashed(true);
+    }
+  }
 }
 
 /**
